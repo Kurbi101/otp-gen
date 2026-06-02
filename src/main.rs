@@ -1,7 +1,23 @@
+use clap::Parser;
 use hmac::{Hmac, KeyInit, Mac};
 use sha1::Sha1;
-use std::env;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+#[derive(Parser)]
+#[command(about = "Generate google authenticator TOTPs")]
+struct Args {
+    #[arg(long, default_value_t = 30)]
+    step: u64,
+
+    #[arg(short, long, default_value_t = 6, value_parser = clap::value_parser!(u8).range(1..=31))]
+    digits: u8,
+
+    #[arg(short, long, default_value_t = 1)]
+    count: usize,
+
+    #[arg(short, long)]
+    secret: String,
+}
 
 fn base32_decode(string: &str) -> Option<Vec<u8>> {
     let code = string.trim_end_matches('=');
@@ -30,30 +46,30 @@ fn base32_decode(string: &str) -> Option<Vec<u8>> {
 }
 
 fn main() {
-    let args: Vec<String> = env::args().collect();
-    if args.len() != 2 {
-        eprintln!("Usage: otp-gen <secret>");
-        std::process::exit(1);
+    let args = Args::parse();
+
+    for i in 0..args.count {
+        let counter = (SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            / args.step)
+            + i as u64;
+
+        let key = base32_decode(&args.secret).expect("Secret is invalid base32");
+        let mut mac: Hmac<Sha1> = Hmac::new_from_slice(&key).unwrap();
+        mac.update(&counter.to_be_bytes());
+        let hs = mac.finalize().into_bytes();
+
+        let offset = (hs.last().unwrap() & 0x0f) as usize;
+
+        let p = u32::from_be_bytes((hs[offset..offset + 4]).try_into().unwrap()) & 0x7FFFFFFF;
+
+        print!(
+            "{:0width$} ",
+            p % 10_u32.pow(args.digits as u32),
+            width = args.digits as usize
+        );
     }
-    let secret = &args[1];
-
-    const STEP: u64 = 30;
-    const DIGITS: usize = 6;
-
-    let counter = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_secs()
-        / STEP;
-
-    let key = base32_decode(&secret).expect("Invalid base32 secret");
-    let mut mac: Hmac<Sha1> = Hmac::new_from_slice(&key).unwrap();
-    mac.update(&counter.to_be_bytes());
-    let hs = mac.finalize().into_bytes();
-
-    let offset = (hs.last().unwrap() & 0x0f) as usize;
-
-    let p = u32::from_be_bytes((hs[offset..offset + 4]).try_into().unwrap()) & 0x7FFFFFFF;
-
-    println!("{:0DIGITS$}", p % 10_u32.pow(DIGITS as u32))
+    println!();
 }
